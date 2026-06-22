@@ -87,4 +87,4 @@ def predict():
 
 if __name__ == "__main__":
     # use_reloader=False stops double loading conflicts and thread locks
-    app.run(debug=True, port=5000, use_reloader=False)
+    app.run(host="0.0.0.0", port=7860)
