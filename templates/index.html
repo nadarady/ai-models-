@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diabetic Retinopathy Classifier</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+        }
+        h2 { text-align: center; color: #2c3e50; }
+        .upload-section {
+            border: 2px dashed #cbd5e1;
+            padding: 30px;
+            text-align: center;
+            border-radius: 6px;
+            background: #f8fafc;
+            cursor: pointer;
+        }
+        #fileInput { display: none; }
+        button {
+            display: block;
+            width: 100%;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 12px;
+            font-size: 16px;
+            border-radius: 6px;
+            margin-top: 15px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #2563eb; }
+        #preview {
+            max-width: 100%;
+            max-height: 250px;
+            margin: 15px auto;
+            display: none;
+            border-radius: 4px;
+        }
+        .result-box {
+            margin-top: 25px;
+            padding: 15px;
+            border-left: 5px solid #10b981;
+            background: #ecfdf5;
+            display: none;
+        }
+        .error-box {
+            margin-top: 25px;
+            padding: 15px;
+            border-left: 5px solid #ef4444;
+            background: #fef2f2;
+            color: #b91c1c;
+            display: none;
+        }
+        table { width: 100%; margin-top: 10px; border-collapse: collapse; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+
+    <h2>Retina Diagnostic Panel</h2>
+    
+    <form id="uploadForm">
+        <div class="upload-section" onclick="document.getElementById('fileInput').click()">
+            <p id="uploadText">Click to upload or drag retina image here</p>
+            <input type="file" id="fileInput" name="image" accept="image/*">
+            <img id="preview" alt="Image Preview">
+        </div>
+        <button type="submit">Analyze Scan</button>
+    </form>
+
+    <div class="error-box" id="errorBox"></div>
+
+    <div class="result-box" id="resultBox">
+        <h3>Analysis Result</h3>
+        <p><strong>Predicted Severity Stage:</strong> <span id="lblClass"></span></p>
+        <p><strong>Confidence:</strong> <span id="lblConf"></span>%</p>
+        
+        <h4>Probability Breakdown</h4>
+        <table id="breakdownTable">
+            <thead>
+                <tr><th>Stage</th><th>Probability</th></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const preview = document.getElementById('preview');
+        const uploadText = document.getElementById('uploadText');
+        const form = document.getElementById('uploadForm');
+        const resultBox = document.getElementById('resultBox');
+        const errorBox = document.getElementById('errorBox');
+
+        // Handle image visualization preview
+        fileInput.addEventListener('change', function() {
+            const file = this.files[0];
+            if (file) {
+                const reader = new FileReader();
+                uploadText.style.display = 'none';
+                preview.style.display = 'block';
+                reader.addEventListener('load', function() {
+                    preview.setAttribute('src', this.result);
+                });
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Submit matching the backend's expectations
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault(); // Stop page from reloading and breaking network streams
+            
+            resultBox.style.display = 'none';
+            errorBox.style.display = 'none';
+
+            if (!fileInput.files[0]) {
+                errorBox.innerText = "Please select an image first.";
+                errorBox.style.display = 'block';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('image', fileInput.files[0]);
+
+            try {
+                // FORCE explicit POST matching app.py routing
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || `Server responded with status ${response.status}`);
+                }
+
+                // Render metrics cleanly
+                document.getElementById('lblClass').innerText = data.prediction;
+                document.getElementById('lblConf').innerText = (data.confidence * 100).toFixed(2);
+
+                // Populate dynamic table safely
+                const tbody = document.getElementById('breakdownTable').querySelector('tbody');
+                tbody.innerHTML = '';
+                
+                Object.entries(data.breakdown).forEach(([className, value]) => {
+                    const row = `<tr><td>Stage ${className}</td><td> ${(value * 100).toFixed(2)}%</td></tr>`;
+                    tbody.innerHTML += row;
+                });
+
+                resultBox.style.display = 'block';
+
+            } catch (err) {
+                errorBox.innerText = `Error: ${err.message}`;
+                errorBox.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>

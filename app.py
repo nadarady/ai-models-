@@ -1,68 +1,67 @@
-"""
-app.py
-Flask web app that serves a simple UI for uploading a retina image
-and getting a diabetic retinopathy severity prediction.
-
-Run (after training has produced dr_model.keras + class_indices.json):
-    python app.py
-
-Then open http://localhost:5000 in your browser.
-"""
-
 import os
+import io
 import json
 import numpy as np
+from PIL import Image
 from flask import Flask, request, jsonify, render_template
+import tensorflow as tf
 from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
-
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(APP_DIR, "dr_model.keras")
-CLASS_INDICES_PATH = os.path.join(APP_DIR, "class_indices.json")
-IMG_SIZE = 128
-
-LABELS = {
-    "0": "No DR (Healthy)",
-    "1": "Mild DR",
-    "2": "Moderate DR",
-    "3": "Severe DR",
-    "4": "Proliferative DR",
-}
+from tensorflow.keras.utils import img_to_array
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
 app = Flask(__name__)
 
-print("Loading model...")
-model = load_model(MODEL_PATH)
+# --- CONFIGURATION ---
+MODEL_PATH = "dr_model.keras"
+CLASS_INDEX_PATH = "class_indices.json"
+IMG_SIZE = 224
 
-with open(CLASS_INDICES_PATH) as f:
-    class_indices = json.load(f)  # e.g. {"0": 0, "1": 1, ...}
-# invert so we can map model output index -> folder/class name
-index_to_class = {v: k for k, v in class_indices.items()}
-print("Model loaded. Class mapping:", index_to_class)
+# Global initialization
+if os.path.exists(MODEL_PATH):
+    model = load_model(MODEL_PATH)
+    print("Model loaded successfully.")
+else:
+    model = None
+    print(f"Warning: {MODEL_PATH} missing. Complete a training run first.")
+
+if os.path.exists(CLASS_INDEX_PATH):
+    with open(CLASS_INDEX_PATH, "r") as f:
+        raw_indices = json.load(f)
+        labels_map = {v: k for k, v in raw_indices.items()}
+else:
+    labels_map = {0: "0", 1: "1", 2: "2", 3: "3", 4: "4"}
 
 
-def predict_image(file_path):
-    img = load_img(file_path, target_size=(IMG_SIZE, IMG_SIZE))
-    arr = img_to_array(img) / 255.0
+def predict_image(file_stream):
+    if model is None:
+        return {"error": "Target neural network model context uninitialized."}
+
+    # Open byte stream directly to bypass operating system file locks
+    img = Image.open(file_stream).convert("RGB")
+    img = img.resize((IMG_SIZE, IMG_SIZE))
+
+    arr = img_to_array(img)
+    arr = preprocess_input(arr)  # Pipeline matches structural training logic
     arr = np.expand_dims(arr, axis=0)
 
-    preds = model.predict(arr)[0]  # array of 5 probabilities
-    best_idx = int(np.argmax(preds))
-    class_name = index_to_class[best_idx]
-    confidence = float(preds[best_idx])
+    predictions = model.predict(arr)[0]
+    predicted_class_idx = int(np.argmax(predictions))
+    confidence = float(predictions[predicted_class_idx])
+    predicted_label = labels_map.get(predicted_class_idx, str(predicted_class_idx))
+
+    # Detailed matrix breakdown for frontend UI rendering
+    breakdown = {
+        labels_map.get(i, str(i)): float(prob) for i, prob in enumerate(predictions)
+    }
 
     return {
-        "class": class_name,
-        "label": LABELS.get(class_name, class_name),
-        "confidence": round(confidence * 100, 2),
-        "all_probabilities": {
-            LABELS.get(index_to_class[i], index_to_class[i]): round(float(p) * 100, 2)
-            for i, p in enumerate(preds)
-        },
+        "prediction": predicted_label,
+        "confidence": confidence,
+        "breakdown": breakdown,
     }
 
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
 
@@ -70,25 +69,22 @@ def index():
 @app.route("/predict", methods=["POST"])
 def predict():
     if "image" not in request.files:
-        return jsonify({"error": "No image uploaded"}), 400
+        return jsonify({"error": "No image payload found in request"}), 400
 
     file = request.files["image"]
     if file.filename == "":
-        return jsonify({"error": "Empty filename"}), 400
-
-    upload_path = os.path.join(APP_DIR, "temp_upload.jpg")
-    file.save(upload_path)
+        return jsonify({"error": "Blank filename received"}), 400
 
     try:
-        result = predict_image(upload_path)
+        img_stream = io.BytesIO(file.read())
+        result = predict_image(img_stream)
+        if "error" in result:
+            return jsonify(result), 500
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    finally:
-        if os.path.exists(upload_path):
-            os.remove(upload_path)
-
-    return jsonify(result)
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # use_reloader=False stops double loading conflicts and thread locks
+    app.run(debug=True, port=5000, use_reloader=False)
